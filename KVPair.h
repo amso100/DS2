@@ -16,7 +16,7 @@ template<typename Key, typename Value> class Pair {
 private:
 	Key key;
 	Value value;
-
+public:
 	Pair(Key key, Value value) : key(key), value(value) { }
 	~Pair() { }
 	Key GetKey() { return this->key; }

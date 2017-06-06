@@ -15,6 +15,13 @@
 #include <new>
 #include "KVPair.h"
 
+class Exception {};
+class TableEmpty               : Exception {};
+class AlreadyInTableException  : Exception {};
+class KeyNotInTableException   : Exception {};
+class InvalidArg               : Exception {};
+class AllocationError          : Exception {};
+
 template<typename Data> class HashTable {
 private:
 	//Hashtable will be initialied with this size.
@@ -25,8 +32,7 @@ private:
 	//The factor by which we will multiply/divide the table size when resizing.
 	const int RESIZE_FACTOR = 2;
 	//The amount of cells in the hash currently being actually used.
-	//We will use this to determine when we need to resize the table.
-	int used_cells;
+	int item_count;
 	//The size of the table at a given moment.
 	int current_table_size;
 
@@ -35,26 +41,24 @@ private:
 		//Current HashEntry's key.
 		int  entry_key;
 		//Current HashEntry's data.
-		Data* entry_data;
+		Data entry_data;
 		//The "next" field will help us whether we will be using regular hashing
 		//with linked lists, or with double hashing by pointing to the next entry
 		//afteer a jump.
 		HashEntry* next;
 	public:
-		//Creates a new HashEntry with default values.
-		HashEntry() : entry_key(nullptr), entry_data(nullptr), next(nullptr) { }
 		//Creates a new HashEntry with specified key, data, and next.
-		HashEntry(int key, Data* data, HashEntry* next) : entry_key(key), entry_data(data), next(next) { }
+		HashEntry(int key, Data data, HashEntry* next) : entry_key(key), entry_data(data), next(next) { }
 		//Destroys the current HashEntry;
 		~HashEntry() { }
 		//Returns the key of the current entry.
 		int GetKey() { return this->entry_key; }
 		//Sets the current key to the given value,
-		void SetKey(int set) { if(set != nullptr) this->entry_key = set; }
+		void SetKey(int set) { this->entry_key = set; }
 		//Returns the data of the current entry.
-		Data* GetData() { return this->entry_data; }
+		Data GetData() { return this->entry_data; }
 		//Sets the current data to the given value,
-		void SetData(Data* set) { this->entry_data = set; }
+		void SetData(Data set) { this->entry_data = set; }
 		//Returns the next HashEntry to the current one.
 		HashEntry* GetNext() { return this->next; }
 		//Sets the current next HashEntry to the given value,
@@ -62,26 +66,62 @@ private:
 	};
 private:
 	//The actual array of hash entries kept in the table.
-	HashEntry* table_entries;
+	HashEntry** table_entries;
+
+	int max_list_length;
 
 	int HashFunc(int key) {
 		return (key % this->current_table_size);
 	}
 
-
-
-	//Function to resize the hash-table. This function is called on every add/remove,
-	//but does not necessarily do anything if there is no resize needed.
-	void ResizeHash(bool expand) {
-		if((this->used_cells >= this->current_table_size/2 && !expand)
-		|| (this->used_cells <= this->current_table_size/2 && expand))
-			return; //If expand/decrease was called, but not needed.
-		if(expand) {
-
+	int ListSize(HashEntry* head) {
+		HashEntry* iter = head;
+		int cnt = 0;
+		while(iter != nullptr) {
+			cnt++;
+			iter = iter->GetNext();
 		}
+		return cnt;
+	}
+	void ResetHashArray(HashEntry** arr, int size) {
+		if(arr == nullptr || size == 0)
+			return;
+		for(int i = 0; i < size; i++)
+			arr[i] = nullptr;
+	}
 
-		else {
-
+	//Function to resize the hash-table. This function is called on every add,
+	//But does not necessarily need to do anything if there weren't enough
+	//collisions in the table.
+	void ResizeHash() {
+		if(this->max_list_length <= 10)
+			return; //If expand was called, but not needed.
+		int size = 0;
+		this->max_list_length = 0;
+		Pair<int, Data>** flushed_arr = this->FlushTable(&size);
+		try {
+			int next_size = this->current_table_size * this->RESIZE_FACTOR;
+			HashEntry** resized = new HashEntry*[next_size]; //Allocate a new array
+			ResetHashArray(resized, next_size);
+			HashEntry** prev = this->table_entries;                          //Keep the previous array for deletion.
+			this->table_entries = resized;                                  //Update the current table's array.
+			this->current_table_size = next_size;
+			this->item_count = 0;
+			for(int i = 0; i < size; i++) {
+				if(flushed_arr[i] != nullptr)
+					this->Insert(flushed_arr[i]->GetKey(), flushed_arr[i]->GetValue());
+			}
+			delete[] prev;
+			for(int i = 0; i < size; i++) {
+				if(flushed_arr[i] != nullptr)
+					delete flushed_arr[i];
+			}
+			delete[] flushed_arr;
+		} catch(AllocationError& e) {
+			delete flushed_arr;
+			throw;
+		} catch(TableEmpty& e) {
+			throw; //Should never be called here, very bad error otherwise.
 		}
 	}
 
@@ -102,20 +142,25 @@ private:
 
 	//Adds a given key and data to the list of HashEntry's kept in the
 	//specified location in the table.
-	void AddToHashList(int list_id, int key_add, Data* data_add) {
+	void AddToHashList(int list_id, int key_add, Data data_add) {
 		if(this->SearchHashList(this->table_entries[list_id], key_add) == true)
 			throw AlreadyInTableException();
 		if(this->table_entries[list_id] == nullptr) {
-			this->table_entries[list_id] = new HashEntry(key_add, data_add);
+			this->table_entries[list_id] = new HashEntry(key_add, data_add, nullptr);
 			return;
 		}
 		HashEntry* head = this->table_entries[list_id];
 		HashEntry* add = new HashEntry(key_add, data_add, head);
 		this->table_entries[list_id] = add;
+		int len = ListSize(this->table_entries[list_id]);
+		if(len > this->max_list_length)
+			this->max_list_length = len;
 	}
 
 	//Returns TRUE if the key was found in the hash list, and FALSE otherwise.
 	bool SearchHashList(HashEntry* start, int find) {
+		if(start == nullptr)
+			return false;
 		HashEntry* iter = start;
 		bool found = false;
 		while(iter != nullptr) {
@@ -123,6 +168,7 @@ private:
 				found = true;
 				break;
 			}
+			iter = iter->GetNext();
 		}
 		return found;
 	}
@@ -135,14 +181,15 @@ private:
 		if(prev->GetKey() == key) {
 			this->table_entries[list_id] = prev->GetNext();
 			delete prev;
-			this->table_entries[list_id] = nullptr;
 			return;
 		}
-		while(prev != nullptr && prev->GetNext()->GetKey() != key) {
+		while(   prev                      != nullptr
+			  && prev->GetNext()           != nullptr
+			  && prev->GetNext()->GetKey() != key)    {
 			prev = prev->GetNext();
 		}
 		//If not found in list.
-		if(prev == nullptr)
+		if(prev == nullptr || prev->GetNext() == nullptr)
 			throw KeyNotInTableException();
 		//If we did find it in the list...
 		//Save it for deletion.
@@ -153,29 +200,35 @@ private:
 		delete to_delete;
 	}
 public:
-	HashTable() {
+	HashTable() : max_list_length(0) {
 		this->current_table_size = this->START_SIZE;
-		this->used_cells = 0;
-		this->table_entries = new HashEntry[START_SIZE];
+		this->item_count = 0;
+		this->table_entries = new HashEntry*[START_SIZE];
+		for(int i = 0; i < START_SIZE; i++) {
+			this->table_entries[i] = nullptr;
+		}
 	}
 	~HashTable() {
-		//Finish code.
+		for(int i = 0; i < this->current_table_size; i++) {
+			this->DeleteHashList(this->table_entries[i]);
+		}
+		delete[] this->table_entries;
 	}
 	int Size() {
-		return this->used_cells;
+		return this->item_count;
 	}
 	void Insert(int key, Data data) {
 		try {
 			int hash_id = this->HashFunc(key);
 			this->AddToHashList(hash_id, key, data);
-			this->used_cells++;
+			this->item_count++;
 		} catch(std::bad_alloc& e) {
 			throw AllocationError();
 		} catch(AlreadyInTableException& e) {
 			throw;
 		}
 		try {
-			this->ResizeHash(true);
+			this->ResizeHash();
 		} catch(std::bad_alloc& e) {
 			throw AllocationError();
 		}
@@ -187,39 +240,48 @@ public:
 	}
 
 	void Delete(int key) {
+		if(key < 0)
+			throw KeyNotInTableException();
 		try {
 			this->DeleteFromList(this->HashFunc(key), key);
-			this->used_cells--;
+			this->item_count--;
 		} catch(KeyNotInTableException& e) {
 			throw;
 		}
-		try {
-			this->ResizeHash(true);
-		} catch(std::bad_alloc& e) {
-			throw AllocationError();
-		}
+		//No need to resize Hash on delete.
 	}
 
 	//Flushs all keys aand data from the table into an array of pairs,
 	//in some unknown order. The table will be empty after the flush,
 	//but will still exist.
-	Pair<int, Data>* FlushTable(int* size_out) {
+	//NOTE: Table does not revert back to original size.
+	Pair<int, Data>** FlushTable(int* size_out) {
 		if(size_out == nullptr)
 			throw InvalidArg();
-		Pair<int, Data>* arr = nullptr;
+		Pair<int, Data>** arr = nullptr;
 		try {
-			arr = new Pair<int, Data>[this->used_cells];
-		} catch(std::bad_alloc) {
+			arr = new Pair<int, Data>*[this->item_count];
+		} catch(std::bad_alloc& e) {
 			throw AllocationError();
 		}
-
+		HashEntry* iter = nullptr;
+		int out_iter = 0;
+		for(int i = 0; i < this->current_table_size; i++) { //Delete table data
+			iter = this->table_entries[i];
+			while(iter != nullptr) {
+				arr[out_iter] = new Pair<int, Data>(iter->GetKey(), iter->GetData());
+				out_iter++;
+				iter = iter->GetNext();
+			}
+			//Delete the list after iterating over it.
+			this->DeleteHashList(this->table_entries[i]);
+			this->table_entries[i] = nullptr;
+		}
+		this->item_count = 0;
+		this->max_list_length = 0;
+		*size_out = out_iter;
+		return arr;
 	}
 };
-
-class Exception {};
-class AlreadyInTableException : Exception {};
-class KeyNotInTableException : Exception {};
-class InvalidArg : Exception {};
-class AllocationError : Exception {};
 
 #endif /* HASHTABLE_H_ */
